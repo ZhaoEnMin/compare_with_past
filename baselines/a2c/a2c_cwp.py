@@ -6,7 +6,7 @@ import tensorflow as tf
 from baselines import logger
 
 from baselines.common import set_global_seeds, explained_variance
-from baselines.common.self_imitation import SelfImitation
+from baselines.common.Compare_with_past import compare_with_past
 from baselines.common.runners import AbstractEnvRunner
 from baselines.common import tf_util
 
@@ -32,7 +32,7 @@ class Model(object):
 
         step_model = policy(sess, ob_space, ac_space, nenvs, 1, reuse=False)
         train_model = policy(sess, ob_space, ac_space, nenvs*nsteps, nsteps, reuse=True)
-        sil_model = policy(sess, ob_space, ac_space, nenvs, nsteps, reuse=True)
+        
 
         neglogpac = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=train_model.pi, labels=A)
         pg_loss = tf.reduce_mean(ADV * neglogpac)
@@ -65,10 +65,14 @@ class Model(object):
             )
             return policy_loss, value_loss, policy_entropy, v_avg
 
-        self.sil = SelfImitation(sil_model.X, sil_model.vf, 
-                sil_model.entropy, sil_model.value, sil_model.neg_log_prob,
-                ac_space, np.sign, n_env=nenvs, n_update=sil_update, beta=sil_beta)
+        self.cwp = compare_with_past()
 
+        def cwp_train():
+            return self.cwp.cwp_train()
+
+        def cwp_getint(obs):
+            return self.cwp.cwp_getint(obs)
+            
         def save(save_path):
             ps = sess.run(params)
             make_path(osp.dirname(save_path))
@@ -80,16 +84,16 @@ class Model(object):
             for p, loaded_p in zip(params, loaded_params):
                 restores.append(p.assign(loaded_p))
             sess.run(restores)
-
         self.train = train
+        self.cwp_train=cwp_train
         self.train_model = train_model
-        self.sil_train = sil_train
         self.step_model = step_model
         self.step = step_model.step
         self.value = step_model.value
         self.initial_state = step_model.initial_state
         self.save = save
         self.load = load
+        self.cwp_getint=cwp_getint
         tf.global_variables_initializer().run(session=sess)
 
 class Runner(AbstractEnvRunner):
@@ -111,9 +115,9 @@ class Runner(AbstractEnvRunner):
             rewards = np.sign(raw_rewards)
             self.states = states
             self.dones = dones
-            if hasattr(self.model, 'sil'):
-                self.model.sil.step(self.obs, actions, raw_rewards, dones)
-                int_rew=self.model.sil.buf_rews_int(self.obs,1)
+            if hasattr(self.model, 'cwp'):
+                self.model.cwp.step(self.obs, actions, raw_rewards, dones)
+                int_rew=self.model.cwp_getint(self.obs)
             rewards=rewards+int_rew
             for n, done in enumerate(dones):
                 if done:
@@ -165,7 +169,7 @@ def learn(policy, env, seed, nsteps=5, total_timesteps=int(80e6), vf_coef=0.5, e
         obs, states, rewards, masks, actions, values, raw_rewards = runner.run()
         episode_stats.feed(raw_rewards, masks)
         policy_loss, value_loss, policy_entropy, v_avg = model.train(obs, states, rewards, masks, actions, values)
-        sil_loss= model.sil.buf_rews_int(0)
+        cwp_loss= model.cwp_train()
         nseconds = time.time()-tstart
         fps = int((update*nbatch)/nseconds)
         if update % log_interval == 0 or update == 1:
@@ -177,11 +181,10 @@ def learn(policy, env, seed, nsteps=5, total_timesteps=int(80e6), vf_coef=0.5, e
             logger.record_tabular("value_loss", float(value_loss))
             logger.record_tabular("explained_variance", float(ev))
             logger.record_tabular("episode_reward", episode_stats.mean_reward())
-            logger.record_tabular("best_episode_reward", float(model.sil.get_best_reward()))
+            logger.record_tabular("best_episode_reward", float(model.cwp.get_best_reward()))
             if sil_update > 0:
-                logger.record_tabular("sil_num_episodes", float(model.sil.num_episodes()))
-                logger.record_tabular("sil_valid_samples", float(sil_samples))
-                logger.record_tabular("sil_steps", float(model.sil.num_steps()))
+                logger.record_tabular("sil_num_episodes", float(model.cwp.num_episodes()))
+                logger.record_tabular("sil_steps", float(model.cwp.num_steps()))
             logger.dump_tabular()
     env.close()
     return model
