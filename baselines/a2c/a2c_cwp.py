@@ -53,8 +53,7 @@ class Model(object):
 
         def train(obs, states, rewards, masks, actions, values):
             advs = rewards - values
-            for step in range(len(obs)):
-                cur_lr = lr.value()
+            cur_lr = lr.value()
             td_map = {train_model.X:obs, A:actions, ADV:advs, R:rewards, LR:cur_lr}
             if states is not None:
                 td_map[train_model.S] = states

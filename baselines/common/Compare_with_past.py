@@ -3,49 +3,11 @@ import tensorflow as tf
 import random
 from gym import spaces
 from baselines.a2c.utils import discount_with_dones,discount_with_dones_equal
-
-def conv_to_fc(x):
-    nh = np.prod([v.value for v in x.get_shape()[1:]])
-    x = tf.reshape(x, [-1, nh])
-    return x
-
-def fc(x, scope, nh, *, init_scale=1.0, init_bias=0.0):
-    with tf.variable_scope(scope):
-        nin = x.get_shape()[1].value
-        w = tf.get_variable("w", [nin, nh], initializer=ortho_init(init_scale))
-        b = tf.get_variable("b", [nh], initializer=tf.constant_initializer(init_bias))
-        return tf.matmul(x, w)+b
-
-def conv(x, scope, *, nf, rf, stride, pad='VALID', init_scale=1.0, data_format='NHWC', one_dim_bias=False):
-    if data_format == 'NHWC':
-        channel_ax = 3
-        strides = [1, stride, stride, 1]
-        bshape = [1, 1, 1, nf]
-    elif data_format == 'NCHW':
-        channel_ax = 1
-        strides = [1, 1, stride, stride]
-        bshape = [1, nf, 1, 1]
-    else:
-        raise NotImplementedError
-    bias_var_shape = [nf] if one_dim_bias else [1, nf, 1, 1]
-    nin = x.get_shape()[channel_ax].value
-    wshape = [rf, rf, nin, nf]
-    with tf.variable_scope(scope):
-        w = tf.get_variable("w", wshape, initializer=ortho_init(init_scale))
-        b = tf.get_variable("b", bias_var_shape, initializer=tf.constant_initializer(0.0))
-        if not one_dim_bias and data_format == 'NHWC':
-            b = tf.reshape(b, bshape)
-        return b + tf.nn.conv2d(x, w, strides=strides, padding=pad, data_format=data_format)
+from baselines.a2c.utils import conv, fc, conv_to_fc, batch_to_seq, seq_to_batch, lstm, lnlstm
 
 class ReplayBuffer(object):
     def __init__(self, size):
-        """Create Prioritized Replay buffer.
-        Parameters
-        ----------
-        size: int
-            Max number of transitions to store in the buffer. When the buffer
-            overflows the old memories are dropped.
-        """
+        
         self._storage = []
         self._maxsize = size
         self._next_idx = 0
@@ -73,25 +35,7 @@ class ReplayBuffer(object):
         return np.array(obses_t), np.array(actions), np.array(returns)
 
     def sample(self, batch_size):
-        """Sample a batch of experiences.
-        Parameters
-        ----------
-        batch_size: int
-            How many transitions to sample.
-        Returns
-        -------
-        obs_batch: np.array
-            batch of observations
-        act_batch: np.array
-            batch of actions executed given obs_batch
-        rew_batch: np.array
-            rewards received as results of executing act_batch
-        next_obs_batch: np.array
-            next set of observations seen after executing act_batch
-        done_mask: np.array
-            done_mask[i] = 1 if executing act_batch[i] resulted in
-            the end of an episode and 0 otherwise.
-        """
+        
         idxes = [random.randint(0, len(self._storage) - 1) for _ in range(batch_size)]
         return self._encode_sample(idxes)
 
