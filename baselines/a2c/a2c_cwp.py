@@ -168,7 +168,7 @@ def learn(policy, env, seed, nsteps=5, total_timesteps=int(80e6), vf_coef=0.5, e
         obs, states, rewards, masks, actions, values, raw_rewards = runner.run()
         episode_stats.feed(raw_rewards, masks)
         policy_loss, value_loss, policy_entropy, v_avg = model.train(obs, states, rewards, masks, actions, values)
-        cwp_loss= model.cwp_train()
+        model.cwp_train()
         nseconds = time.time()-tstart
         fps = int((update*nbatch)/nseconds)
         if update % log_interval == 0 or update == 1:
