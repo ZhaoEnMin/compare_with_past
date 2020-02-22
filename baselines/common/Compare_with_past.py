@@ -267,7 +267,7 @@ class compare_with_past(object):
             X_r = fc(X_r, 'fc1r', nh=1, init_scale=np.sqrt(2))
             X_r = tf.reduce_mean(tf.square(X_r), axis=-1, keep_dims=True)
             self.int_rew = tf.reshape(X_r, tf.shape(rewards))
-            self.rew_trainloss,self.train_op=self.self.__AddTrainstep(self.int_rew,rewards)
+            self.rew_trainloss,self.train_op=self.__AddTrainstep(self.int_rew,rewards)
             self.sess=tf.Session()
             self.sess.run(tf.global_variables_initializer())
     def cwp_train(self):
