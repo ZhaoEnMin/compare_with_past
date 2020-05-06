@@ -8,6 +8,8 @@ from baselines import logger
 from collections import deque
 from baselines.common import explained_variance
 from baselines.common.runners import AbstractEnvRunner
+from baselines.common.Compare_with_past import compare_with_past
+from baselines.a2c.utils import EpisodeStats
 
 class Model(object):
     def __init__(self, *, policy, ob_space, ac_space, nbatch_act, nbatch_train,
@@ -91,9 +93,10 @@ class Runner(AbstractEnvRunner):
         super().__init__(env=env, model=model, nsteps=nsteps)
         self.lam = lam
         self.gamma = gamma
+        self.cwp=compare_with_past()
 
     def run(self):
-        mb_obs, mb_rewards, mb_actions, mb_values, mb_dones, mb_neglogpacs = [],[],[],[],[],[]
+        mb_obs, mb_rewards,mb_rawrewards, mb_actions, mb_values, mb_dones, mb_neglogpacs = [],[],[],[],[],[]
         mb_states = self.states
         epinfos = []
         for _ in range(self.nsteps):
@@ -108,9 +111,21 @@ class Runner(AbstractEnvRunner):
                 maybeepinfo = info.get('episode')
                 if maybeepinfo: epinfos.append(maybeepinfo)
             mb_rewards.append(rewards)
+            mb_rawrewards.append(rewards)
+        
+        self.cwp.obsbuffer.update(mb_obs[:,:,:,-1:])
+        cwp_loss=self.cwp.cwp_train(mb_obs)
+        int_rews=self.cwp.cwp_getint(mb_obs)
+        #self.cwp.rewbuffer.update(int_rews)
+        rffs_intt = np.array([self.cwp.rff_int.update(rew) for rew in int_rews.reshape(16,128).T])
+        self.cwp.rewbuffer.update(rffs_intt.reshape(2048,1))
+        int_rews=int_rews/np.sqrt(self.cwp.rewbuffer.var)
+        mb_rewards=mb_rewards+int_rews.reshape(16,128)
+        
         #batch of steps to batch of rollouts
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
         mb_rewards = np.asarray(mb_rewards, dtype=np.float32)
+        mb_rawrewards = np.asarray(mb_rawrewards, dtype=np.float32)
         mb_actions = np.asarray(mb_actions)
         mb_values = np.asarray(mb_values, dtype=np.float32)
         mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)
@@ -130,8 +145,8 @@ class Runner(AbstractEnvRunner):
             delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal - mb_values[t]
             mb_advs[t] = lastgaelam = delta + self.gamma * self.lam * nextnonterminal * lastgaelam
         mb_returns = mb_advs + mb_values
-        return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs)),
-            mb_states, epinfos)
+        return (*map(sf01, (mb_obs, mb_returns, mb_rawrewards,mb_dones, mb_actions, mb_values, mb_neglogpacs)),
+            mb_states, epinfos,cwp_loss,int_rews)
 # obs, returns, masks, actions, values, neglogpacs, states = runner.run()
 def sf01(arr):
     """
@@ -145,9 +160,9 @@ def constfn(val):
         return val
     return f
 
-def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
+def learn(*, policy, env, nsteps=128, total_timesteps, ent_coef, lr,
             vf_coef=0.5,  max_grad_norm=0.5, gamma=0.99, lam=0.95,
-            log_interval=10, nminibatches=4, noptepochs=4, cliprange=0.2,
+            log_interval=100, nminibatches=4, noptepochs=4, cliprange=0.2,
             save_interval=0, load_path=None):
 
     if isinstance(lr, float): lr = constfn(lr)
@@ -173,11 +188,12 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     if load_path is not None:
         model.load(load_path)
     runner = Runner(env=env, model=model, nsteps=nsteps, gamma=gamma, lam=lam)
-
+    episode_stats = EpisodeStats(nsteps, nenvs)
     epinfobuf = deque(maxlen=100)
     tfirststart = time.time()
-
     nupdates = total_timesteps//nbatch
+    c=np.zeros(100000)
+    k=0
     for update in range(1, nupdates+1):
         assert nbatch % nminibatches == 0
         nbatch_train = nbatch // nminibatches
@@ -185,7 +201,12 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
         frac = 1.0 - (update - 1.0) / nupdates
         lrnow = lr(frac)
         cliprangenow = cliprange(frac)
-        obs, returns, masks, actions, values, neglogpacs, states, epinfos = runner.run() #pylint: disable=E0632
+        obs, returns,rawrewards, masks, actions, values, neglogpacs, states, epinfos,cwp_loss,int_rews = runner.run() #pylint: disable=E0632
+        
+        
+        episode_stats.feed(rawrewards, masks)
+        
+        
         epinfobuf.extend(epinfos)
         mblossvals = []
         if states is None: # nonrecurrent version
@@ -217,7 +238,12 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
         tnow = time.time()
         fps = int(nbatch / (tnow - tstart))
         if update % log_interval == 0 or update == 1:
+            print(cwp_loss,int_rews)
             ev = explained_variance(values, returns)
+            print('raw_rewards',episode_stats.mean_reward())
+            c[k]=episode_stats.mean_reward()
+            k=k+1
+            np.save('mean_reward_ppo.npy',c)
             logger.logkv("serial_timesteps", update*nsteps)
             logger.logkv("nupdates", update)
             logger.logkv("total_timesteps", update*nbatch)

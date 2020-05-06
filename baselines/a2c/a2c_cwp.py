@@ -64,14 +64,6 @@ class Model(object):
             )
             return policy_loss, value_loss, policy_entropy, v_avg
 
-        self.cwp = compare_with_past()
-
-        def cwp_train():
-            return self.cwp.cwp_train()
-
-        def cwp_getint(obs):
-            return self.cwp.cwp_getint(obs)
-            
         def save(save_path):
             ps = sess.run(params)
             make_path(osp.dirname(save_path))
@@ -84,7 +76,7 @@ class Model(object):
                 restores.append(p.assign(loaded_p))
             sess.run(restores)
         self.train = train
-        self.cwp_train=cwp_train
+
         self.train_model = train_model
         self.step_model = step_model
         self.step = step_model.step
@@ -92,14 +84,25 @@ class Model(object):
         self.initial_state = step_model.initial_state
         self.save = save
         self.load = load
-        self.cwp_getint=cwp_getint
         tf.global_variables_initializer().run(session=sess)
 
 class Runner(AbstractEnvRunner):
 
-    def __init__(self, env, model, nsteps=5, gamma=0.99):
+    def __init__(self, env, model, nsteps=128, gamma=0.99):
         super().__init__(env=env, model=model, nsteps=nsteps)
         self.gamma = gamma
+        self.cwp=compare_with_past()
+    
+    def collect_random_statistics(self,num_steps):
+        mb_obs=[]
+        mb_states = self.states
+        for _ in range(num_steps):
+            actions, values, self.states, neglogpacs = self.model.step(self.obs, self.states, self.dones)
+            mb_obs.append(self.obs.copy())
+            self.obs[:], rewards, self.dones, infos = self.env.step(actions)
+        mb_obss = np.asarray(mb_obs, dtype=np.uint8).swapaxes(1, 0).reshape(self.batch_ob_shape)
+        self.cwp.obsbuffer.update(mb_obss[:,:,:,-1:])
+        
 
     def run(self):
         mb_obs, mb_rewards, mb_actions, mb_values, mb_dones, mb_raw_rewards = [],[],[],[],[],[]
@@ -111,13 +114,10 @@ class Runner(AbstractEnvRunner):
             mb_values.append(values)
             mb_dones.append(self.dones)
             obs, raw_rewards, dones, _ = self.env.step(actions)
-            rewards = np.sign(raw_rewards)
+            rewards = raw_rewards
             self.states = states
             self.dones = dones
-            if hasattr(self.model, 'cwp'):
-                self.model.cwp.step(self.obs, actions, raw_rewards, dones)
-                int_rew=self.model.cwp_getint(self.obs)
-            rewards=rewards+int_rew
+            self.cwp.step(self.obs, actions, rewards, dones)
             for n, done in enumerate(dones):
                 if done:
                     self.obs[n] = self.obs[n]*0
@@ -127,7 +127,20 @@ class Runner(AbstractEnvRunner):
         mb_dones.append(self.dones)
         #batch of steps to batch of rollouts
         mb_obs = np.asarray(mb_obs, dtype=np.uint8).swapaxes(1, 0).reshape(self.batch_ob_shape)
+
+        self.cwp.obsbuffer.update(mb_obs[:,:,:,-1:])
+        self.cwp.cwp_train(mb_obs)
+        int_rews=self.cwp.cwp_getint(mb_obs)
+        print(sum(int_rews)/2048)
+        if sum(int_rews)/2048<1:
+        #self.cwp.rewbuffer.update(int_rews)
+            rffs_intt = np.array([self.cwp.rff_int.update(rew) for rew in int_rews.reshape(16,128).T])
+            self.cwp.rewbuffer.update(rffs_intt.reshape(2048,1))
+            int_rews=int_rews/np.sqrt(self.cwp.rewbuffer.var)
+            print(np.sqrt(self.cwp.rewbuffer.var),sum(int_rews)/2048)
+        
         mb_rewards = np.asarray(mb_rewards, dtype=np.float32).swapaxes(1, 0)
+        mb_rewards=mb_rewards+int_rews.reshape(16,128)
         mb_raw_rewards = np.asarray(mb_raw_rewards, dtype=np.float32).swapaxes(1, 0)
         mb_actions = np.asarray(mb_actions, dtype=np.int32).swapaxes(1, 0)
         mb_values = np.asarray(mb_values, dtype=np.float32).swapaxes(1, 0)
@@ -149,29 +162,33 @@ class Runner(AbstractEnvRunner):
         mb_actions = mb_actions.flatten()
         mb_values = mb_values.flatten()
         mb_masks = mb_masks.flatten()
-        return mb_obs, mb_states, mb_rewards, mb_masks, mb_actions, mb_values, mb_raw_rewards
+        return mb_obs, mb_states, mb_rewards, mb_masks, mb_actions, mb_values, mb_raw_rewards,int_rews
 
-def learn(policy, env, seed, nsteps=5, total_timesteps=int(80e6), vf_coef=0.5, ent_coef=0.01, max_grad_norm=0.5, lr=7e-4, lrschedule='linear', epsilon=1e-5, alpha=0.99, gamma=0.99, log_interval=100, sil_update=4, sil_beta=0.0):
+def learn(policy, env, seed, nsteps=128, total_timesteps=int(200e6), vf_coef=0.5, ent_coef=0.01, max_grad_norm=0.5, lr=7e-4, lrschedule='linear', epsilon=1e-5, alpha=0.99, gamma=0.99, log_interval=100, sil_update=4, sil_beta=0.0):
     set_global_seeds(seed)
-
     nenvs = env.num_envs
     ob_space = env.observation_space
     ac_space = env.action_space
     model = Model(policy=policy, ob_space=ob_space, ac_space=ac_space, nenvs=nenvs, nsteps=nsteps, ent_coef=ent_coef, vf_coef=vf_coef,
         max_grad_norm=max_grad_norm, lr=lr, alpha=alpha, epsilon=epsilon, total_timesteps=total_timesteps, lrschedule=lrschedule, sil_update=sil_update, sil_beta=sil_beta)
     runner = Runner(env, model, nsteps=nsteps, gamma=gamma)
-
     episode_stats = EpisodeStats(nsteps, nenvs)
     nbatch = nenvs*nsteps
     tstart = time.time()
+    global oppo
+    oppo=0
+    c=np.zeros(1100)
+    k=0
     for update in range(1, total_timesteps//nbatch+1):
-        obs, states, rewards, masks, actions, values, raw_rewards = runner.run()
+        obs, states, rewards, masks, actions, values, raw_rewards,int_rews = runner.run()
         episode_stats.feed(raw_rewards, masks)
         policy_loss, value_loss, policy_entropy, v_avg = model.train(obs, states, rewards, masks, actions, values)
-        model.cwp_train()
+        
         nseconds = time.time()-tstart
         fps = int((update*nbatch)/nseconds)
-        if update % log_interval == 0 or update == 1:
+        if update % log_interval == 0 or update == 1:            
+            
+            print(total_timesteps)
             ev = explained_variance(values, rewards)
             logger.record_tabular("nupdates", update)
             logger.record_tabular("total_timesteps", update*nbatch)
@@ -180,10 +197,13 @@ def learn(policy, env, seed, nsteps=5, total_timesteps=int(80e6), vf_coef=0.5, e
             logger.record_tabular("value_loss", float(value_loss))
             logger.record_tabular("explained_variance", float(ev))
             logger.record_tabular("episode_reward", episode_stats.mean_reward())
-            logger.record_tabular("best_episode_reward", float(model.cwp.get_best_reward()))
-            if sil_update > 0:
-                logger.record_tabular("sil_num_episodes", float(model.cwp.num_episodes()))
-                logger.record_tabular("sil_steps", float(model.cwp.num_steps()))
+            #logger.record_tabular("best_episode_reward", float(runner.cwp.get_best_reward()))
+            c[k]=episode_stats.mean_reward()
+            k=k+1
+            np.save('a2c+pvndsoft_0.1.npy',c)
+            #if sil_update > 0:
+                #logger.record_tabular("sil_num_episodes", float(runner.cwp.num_episodes()))
+                #logger.record_tabular("sil_steps", float(runner.cwp.num_steps()))
             logger.dump_tabular()
     env.close()
     return model

@@ -6,7 +6,7 @@ from baselines.common.vec_env.vec_frame_stack import VecFrameStack
 from baselines.ppo2.ppo2 import learn
 from baselines.ppo2.policies import CnnPolicy, LstmPolicy, LnLstmPolicy
 
-def train(env_id, num_timesteps, seed, policy, num_env):
+def train(env_id, num_timesteps, seed, policy, lrschedule, num_env):
     if policy == 'cnn':
         policy_fn = CnnPolicy
     elif policy == 'lstm':
@@ -14,7 +14,7 @@ def train(env_id, num_timesteps, seed, policy, num_env):
     elif policy == 'lnlstm':
         policy_fn = LnLstmPolicy
     env = VecFrameStack(make_atari_env(env_id, num_env, seed), 4)
-    learn(policy_fn, env)
+    learn(policy_fn, env, seed, total_timesteps=int(200e6 * 1.1), lrschedule=lrschedule)
     env.close()
 
 def main():
@@ -24,7 +24,7 @@ def main():
     args = parser.parse_args()
     logger.configure()
     train(args.env, num_timesteps=args.num_timesteps, seed=args.seed,
-        policy=args.policy, num_env=16)
+        policy=args.policy, lrschedule=args.lrschedule, num_env=16)
 
 if __name__ == '__main__':
     main()

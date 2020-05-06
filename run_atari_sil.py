@@ -3,7 +3,7 @@
 from baselines import logger
 from baselines.common.cmd_util import make_atari_env, atari_arg_parser
 from baselines.common.vec_env.vec_frame_stack import VecFrameStack
-from baselines.a2c.a2c_sil import learn
+from baselines.a2c.a2c_cwp import learn
 from baselines.a2c.policies import CnnPolicy, LstmPolicy, LnLstmPolicy
 
 def train(env_id, num_timesteps, seed, policy, lrschedule, num_env, sil_update, sil_beta):
@@ -29,7 +29,7 @@ def main():
     parser.add_argument('--log', default='/tmp/a2c')
     args = parser.parse_args()
     logger.configure(dir=args.log)
-    train(args.env, num_timesteps=args.num_timesteps, seed=args.seed,
+    train(args.env, num_timesteps=int(20e7), seed=args.seed,
         policy=args.policy, lrschedule=args.lrschedule, 
         sil_update=args.sil_update, sil_beta=args.sil_beta,
         num_env=16)

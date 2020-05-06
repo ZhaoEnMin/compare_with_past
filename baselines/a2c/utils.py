@@ -158,16 +158,17 @@ def discount_with_dones(rewards, dones, gamma):
         r = reward + gamma*r*(1.-done) # fixed off by one bug
         discounted.append(r)
     return discounted[::-1]
-def discount_with_dones_equal(rewards,dones)
-    discounted = []
+def discount_with_dones_equal(rewards,dones):
+    discounted = np.zeros((len(rewards),1))
     r = 0
     k=0
-    for n,(reward, done) in zip(rewards, dones):
-        if reward>0:
-            for i in range(k,n+1):
-                r=(i-k)/n
-                discounted.append(r)
-            k=n+1
+    for i in range(len(rewards)):
+        if rewards[i]>0:
+            #discounted[i,0]=1
+            for j in range(k,i+1):
+                if i>k:
+                    discounted[j,0]=pow((j-k),3)/pow((i-k),3)
+            k=i+1
     return discounted
 
 def find_trainable_variables(key):

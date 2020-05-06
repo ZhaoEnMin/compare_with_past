@@ -4,7 +4,7 @@ Helpers for scripts like run_atari.py.
 
 import os
 import gym
-from gym.wrappers import FlattenDictWrapper
+#from gym.wrappers import FlattenDictWrapper
 from baselines import logger
 from baselines.bench import Monitor
 from baselines.common import set_global_seeds
